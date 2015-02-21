@@ -1,0 +1,155 @@
+---
+title: "Severe Weather Events in US Analysis"
+author: "Carlos Barboza"
+date: "18/02/2015"
+output: html_document
+---
+
+
+## Synopsis
+
+This study is the second assignment of the Coursera's Reproducible Research course held by John Hopkins Bloomberg School of Public Health. Its aim is to identify which type of weather events are more harmful both in population health as in economic aspects. 
+ 
+Analysing the storm databaes available by the U.S. National Oceanic and Atmospheric Administration's (NOAA) from 1950 to 2011 we can point out the main types of events the causes fatalities and injuries as well as the event types that causes more economic losses.
+
+It's clear that Hurricanes are the most severe events for injuries and causalities and that Hurricane, Typhoon and River Floods are the more severe for economic losses. Both occur with more frequency on the southern states of US.
+
+ 
+## Data Processing
+ 
+Data for this assignment was made available from the course's web site, on the peer assessments section, as a csv file compressed with bz2 algorithm. File can also be obtained on this [repository][1] as a file with the description of its format. Let's first load the data for a initial analysis.
+ 
+```{r load_raw_data, cache=TRUE}
+if (file.exists("repdata_data_StormData.csv.bz2")) {
+  raw_data <- read.csv(bzfile("repdata_data_StormData.csv.bz2"),stringsAsFactors=FALSE,na.strings = "NA")  
+  summary(raw_data)
+}
+```
+
+Since our study is interested only on the side effects of the events on human health and economy, let's create a smaller data set just with the necessary columns and convert them as necessary:
+ 
+- BGN_DATE: Start date of the event, convert to date type, filter out recent events since they are more precise. 
+- STATE: State code, in order to aggregate results per state. 
+- EVTYPE: Event Type, in order to aggregate losses per event. 
+- FATALITIES: Number of deaths caused by the event. Convert to number. 
+- INJURIES: Amount of injured people due to the event. Convert to number. 
+- PROPDMG: Property damage in US Dollars. Convert to number and multiply by its exponent. 
+- PROPDMGEXP: Property damage exponent (K: x1000, M: x1.000.000, B: x1.000.000.000). 
+- CROPDMG: Crop damage in US Dollars. Convert to number and multiply by its exponent. 
+- CROPDMGEXP: Crop damage exponent (K: x1000, M: x1.000.000, B: x1.000.000.000). 
+ 
+Also, let's store the new data set into a data.table strucutre for later analysis. 
+
+``` {r filter_raw_data_columns}
+library(data.table)
+adjusted_data <- setnames(data.table(as.Date((gsub(" 0:00:00","", raw_data$BGN_DATE)),"%m/%d/%Y"),
+                                     as.factor(raw_data$STATE),
+                                     as.factor(raw_data$EVTYPE),
+                                     as.numeric(raw_data$FATALITIES),
+                                     as.numeric(raw_data$INJURIES),
+                                     as.numeric(raw_data$PROPDMG),
+                                     as.character(raw_data$PROPDMGEXP),
+                                     as.numeric(raw_data$CROPDMG),
+                                     as.character(raw_data$CROPDMGEXP)),
+                          c("date","state_abb","type","fatalities","injuries","prop_dmg",                                
+                          "prop_dmg_exp","crop_dmg","crop_dmg_exp"))
+```
+
+
+Let's remove invalid data, where columns prop_dmg_exp and crop_dmg_exp have not allowed values. Allowed values for these columns are: empty, K/k, M/m or B. Also let's remove rows where damage and casualities are zero.
+
+```{r remove_invalid_rows}
+adjusted_data <- adjusted_data[!prop_dmg==0 | !crop_dmg==0 | !fatalities==0 | !injuries==0]
+adjusted_data <- adjusted_data[prop_dmg_exp%in%c("k","K","m","M","b","B","")]
+adjusted_data <- adjusted_data[crop_dmg_exp%in%c("k","K","m","M","b","B","")]
+adjusted_data <- adjusted_data[crop_dmg_exp%in%c("k","K","m","M","b","B","")]
+```
+
+Now let's multiply the prop_dmg and crop_dmg by its exponents (prop_dmg_exp and crop_dmg_exp).
+
+```{r convert_us_dollar_amounts}
+adjusted_data[prop_dmg_exp%in%c("k","K"),prop_dmg:=prop_dmg*1000]
+adjusted_data[prop_dmg_exp%in%c("m","M"),prop_dmg:=prop_dmg*1000000]
+adjusted_data[prop_dmg_exp%in%c("b","B"),prop_dmg:=prop_dmg*1000000000]
+adjusted_data[crop_dmg_exp%in%c("k","K"),crop_dmg:=prop_dmg*1000]
+adjusted_data[crop_dmg_exp%in%c("m","M"),crop_dmg:=prop_dmg*1000000]
+adjusted_data[crop_dmg_exp%in%c("b","B"),crop_dmg:=prop_dmg*1000000000]
+```
+
+Let's aggregate the losses per year to identify which years we should consider in our analysis since the earlies years are no so accurate.
+
+```{r losses_per_year}
+losses_per_year <- adjusted_data[, lapply(.SD, sum), by=year(date), .SDcols=c("fatalities","injuries","prop_dmg","crop_dmg")]
+losses_per_year
+```
+
+Looks like crop damage losses were introduced just in 1993, since these values are much more representative than property losses, let's consider data from 1993 until 2011.
+
+```{r filter_data_by_year}
+adjusted_data <- adjusted_data[year(date)>=1993]
+```
+
+Now let's aggregate data by eventy type and state in order to verify which events bring more losses per state.
+
+```{r aggregate_data}
+agg_data <- adjusted_data[, lapply(.SD, sum), by=c("state_abb","type"), .SDcols=c("fatalities","injuries","prop_dmg","crop_dmg")]
+```
+
+Now let's create a data table with the US states names and abbreviations to translate the state abbreviation to state name.
+
+```{r state_table}
+us_states <- setnames(data.table(as.factor(state.abb), as.character(tolower(state.name))),c("state_abb","region"))
+```
+
+Merging both tabels now to add the state name (column region) to the agg_data data table
+
+```{r add_state_names}
+agg_data <- merge(agg_data, us_states, by="state_abb", all.x = TRUE)
+```
+## Results
+
+In order to answer the questions about which type of events are more harmful with respect to population health and also economic impact, let's agregate the health and economic impact by event type.
+ 
+```{r aggregate_by_type}
+agg_data_per_event <- agg_data[, lapply(.SD, sum), by=type, .SDcols=c("fatalities","injuries","prop_dmg","crop_dmg")]
+```
+
+Now let's make a plot of the top 10 most harmful events per health and economic impact, let's use ggplot2 and gridExtra packages for this.
+
+
+```{r plot_most_harmful_event_types}
+library(ggplot2)
+library(gridExtra)
+p1 <- ggplot(agg_data_per_event[order(-rank(fatalities+injuries))][1:10], aes(x=reorder(type,fatalities+injuries), y=fatalities+injuries)) + geom_bar(stat="identity",color="red",fill="red") + coord_flip() + ylab("Fatalities + Injuries") + xlab("Event Type") + ggtitle("Most Harmful Events in US - Human Health") 
+
+p2 <- ggplot(agg_data_per_event[order(-rank(prop_dmg+crop_dmg))][1:10], aes(x=reorder(type,prop_dmg+crop_dmg), y=((prop_dmg+crop_dmg)/1000000000000))) + geom_bar(stat="identity",color="red",fill="red") + coord_flip() + ylab("Property + Crop Losses (Trillion of US Dollars)") + xlab("Event Type") + ggtitle("Most Harmful Events in US - Economic Impact") 
+
+grid.arrange(p1, p2, ncol=1)
+```
+
+We can see that Tornados have the greatest impact on fatalities and injuries and that Hurricane/Thyphoon and River Flood had the greatest economic impact.
+
+Now let's draw a map showing in which states these type of events bring more losses using the maps package.
+
+```{r draw_map}
+library(maps)
+library(ggplot2)
+library(gridExtra)
+us_map <- map_data("state")
+us_map_tornados <- merge(us_map, agg_data[type=="TORNADO"], by="region", all.x=TRUE)
+us_map_hurricane_flood <- merge(us_map, agg_data[type%in%c("HURRICANE/TYPHOON","RIVER FLOOD")], by="region", all.x=TRUE)
+
+
+p1 <- ggplot() + geom_polygon(data=us_map_tornados, aes(x=long, y=lat, group=group, fill=us_map_tornados$injuries+us_map_tornados$fatalities)) + scale_fill_continuous(low="thistle2", high="darkred", guide="colorbar") + theme_bw(base_size = 10) + labs(fill = "Number of fatalities and injuries" ,title = "Fatalities and Injuries due to Hurricanes in US from 1993 to 2011", x="", y="") + scale_y_continuous(breaks=c()) + scale_x_continuous(breaks=c()) + theme(panel.border =  element_blank())
+
+p2 <- ggplot() + geom_polygon(data=us_map_hurricane_flood, aes(x=long, y=lat, group=group, fill=(us_map_hurricane_flood$prop_dmg+us_map_hurricane_flood$crop_dmg)/1000000000000)) + scale_fill_continuous(low="thistle2", high="darkred", guide="colorbar") + theme_bw(base_size = 10) + labs(fill = "Property and Crop Losses (Trillion of US Dollars)" ,title = "Property and Crop losses in US due to Hurricane, Typhoon and River Flood from 1993 to 2011", x="", y="") + scale_y_continuous(breaks=c()) + scale_x_continuous(breaks=c()) + theme(panel.border =  element_blank())
+
+grid.arrange(p1, p2, ncol=1)
+```
+
+As we can see on the maps, both human health impact and economic losses have more incidence on the southern states of US. River Flood is also significant in the midwest.
+
+
+
+
+[1]: https://github.com/brbza/repdata_pa2
